@@ -1,4 +1,4 @@
-import * as THREE from 'import * as THREE from 'three';
+import * as THREE from 'three';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
 import * as Tone from 'tone';
 
@@ -69,9 +69,8 @@ if (initBtn) {
 // --- Scene Setup ---
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
-scene.add(camera); // Crucial: Add camera to scene so child objects render
+scene.add(camera);
 
-// A secondary camera to capture the scene flatly for the feedback loop
 const monoCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -132,8 +131,6 @@ const feedbackMaterial = new THREE.ShaderMaterial({
     blending: THREE.NormalBlending
 });
 
-// FIX: Create a massive plane anchored 50 meters in front of the camera.
-// This allows WebXR to natively render the feedback buffer in 3D stereoscopic space.
 const feedbackPlaneGeo = new THREE.PlaneGeometry(200, 200);
 const feedbackPlane = new THREE.Mesh(feedbackPlaneGeo, feedbackMaterial);
 feedbackPlane.position.z = -50; 
@@ -143,7 +140,7 @@ camera.add(feedbackPlane);
 const geom = new THREE.IcosahedronGeometry(0.3, 0);
 const mat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, wireframe: true });
 const seedMesh = new THREE.Mesh(geom, mat);
-seedMesh.position.set(0, 0, -1.5); // Placed directly in front of the user
+seedMesh.position.set(0, 0, -1.5); 
 scene.add(seedMesh);
 
 let pulseScale = 1.0;
@@ -153,12 +150,9 @@ function pulseGeometry() {
 
 // --- Render Loop ---
 renderer.setAnimationLoop(() => {
-    
-    // 1. Sync the offscreen capture camera to the VR headset's physical location
     monoCamera.position.copy(camera.position);
     monoCamera.quaternion.copy(camera.quaternion);
 
-    // 2. Animate Seed Geometry
     seedMesh.rotation.x += 0.01;
     seedMesh.rotation.y += 0.02;
     pulseScale = THREE.MathUtils.lerp(pulseScale, 1.0, 0.1);
@@ -166,21 +160,16 @@ renderer.setAnimationLoop(() => {
 
     const currentRT = renderer.getRenderTarget();
 
-    // STEP A: Render everything to the offscreen buffer (Target B)
     renderer.setRenderTarget(renderTargetB);
     renderer.clear();
     feedbackMaterial.uniforms.tDiffuse.value = renderTargetA.texture;
-    // Three.js safely forces mono rendering when rendering to a WebGLRenderTarget
     renderer.render(scene, monoCamera); 
 
-    // STEP B: Render to the physical VR Headset Displays
     renderer.setRenderTarget(currentRT); 
     renderer.clear();
     feedbackMaterial.uniforms.tDiffuse.value = renderTargetB.texture;
-    // Renders the true 3D scene (including the stereoscopic seed mesh) over the passthrough
     renderer.render(scene, camera);
 
-    // STEP C: Swap buffers
     let temp = renderTargetA;
     renderTargetA = renderTargetB;
     renderTargetB = temp;
