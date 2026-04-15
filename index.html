@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Phosphor Decay AR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; color: #fff; font-family: monospace; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,0,0,0.8); padding: 15px; border: 1px solid #333; }
+        .slider-container { margin-bottom: 10px; }
+        label { display: inline-block; width: 140px; }
+        input[type=range] { vertical-align: middle; width: 150px; }
+        span.val { display: inline-block; width: 40px; text-align: right; }
+        button { background: #00ffcc; color: #000; border: none; padding: 10px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 10px;}
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "tone": "https://unpkg.com/tone@14.7.77/build/Tone.js"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="ui">
+        <h3>Phosphor Decay AR</h3>
+        <div class="slider-container">
+            <label>Decay (Fade):</label>
+            <input type="range" id="paramDecay" min="0.80" max="0.99" step="0.01" value="0.95">
+            <span class="val" id="valDecay">0.95</span>
+        </div>
+        <div class="slider-container">
+            <label>Zoom (Tunnel):</label>
+            <input type="range" id="paramZoom" min="0.90" max="1.10" step="0.01" value="0.98">
+            <span class="val" id="valZoom">0.98</span>
+        </div>
+        <div class="slider-container">
+            <label>Rotation:</label>
+            <input type="range" id="paramRot" min="-0.1" max="0.1" step="0.005" value="0.02">
+            <span class="val" id="valRot">0.02</span>
+        </div>
+        <button id="initAudioBtn">1. Initialize Audio Engine</button>
+        <p style="font-size: 0.8em; color: #aaa;">Click Initialize before entering AR.</p>
+    </div>
+    <script type="module" src="./main.js"></script>
+</body>
+</html>
