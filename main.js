@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'import * as THREE from 'three';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
 import * as Tone from 'tone';
 
@@ -14,63 +14,66 @@ const state = {
 ['Decay', 'Zoom', 'Rot'].forEach(param => {
     const el = document.getElementById(`param${param}`);
     const valEl = document.getElementById(`val${param}`);
-    el.addEventListener('input', (e) => {
-        const val = parseFloat(e.target.value);
-        valEl.innerText = val;
-        if (param === 'Decay') state.decay = val;
-        if (param === 'Zoom') state.zoom = val;
-        if (param === 'Rot') state.rotation = val;
-        
-        // Update shader uniforms in real-time
-        if (feedbackMaterial) {
-            feedbackMaterial.uniforms.decay.value = state.decay;
-            feedbackMaterial.uniforms.zoom.value = state.zoom;
-            feedbackMaterial.uniforms.angle.value = state.rotation;
-        }
-    });
+    if(el) {
+        el.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            valEl.innerText = val;
+            if (param === 'Decay') state.decay = val;
+            if (param === 'Zoom') state.zoom = val;
+            if (param === 'Rot') state.rotation = val;
+            
+            if (feedbackMaterial) {
+                feedbackMaterial.uniforms.decay.value = state.decay;
+                feedbackMaterial.uniforms.zoom.value = state.zoom;
+                feedbackMaterial.uniforms.angle.value = state.rotation;
+            }
+        });
+    }
 });
 
 // --- Audio Engine (Tone.js) ---
 let synth, loop;
-document.getElementById('initAudioBtn').addEventListener('click', async (e) => {
-    await Tone.start();
-    
-    // Create an atmospheric FM Synth
-    synth = new Tone.FMSynth({
-        harmonicity: 3,
-        modulationIndex: 10,
-        detune: 0,
-        oscillator: { type: "sine" },
-        envelope: { attack: 0.1, decay: 0.2, sustain: 0.1, release: 1.5 },
-        modulation: { type: "square" },
-        modulationEnvelope: { attack: 0.1, decay: 0.2, sustain: 1, release: 0.5 }
-    }).toDestination();
-
-    // Setup a generative loop (pentatonic sequence)
-    const notes = ["C3", "D3", "E3", "G3", "A3"];
-    let index = 0;
-    
-    loop = new Tone.Loop(time => {
-        let note = notes[index % notes.length];
-        synth.triggerAttackRelease(note, "8n", time);
-        index++;
+const initBtn = document.getElementById('initAudioBtn');
+if (initBtn) {
+    initBtn.addEventListener('click', async (e) => {
+        await Tone.start();
         
-        // Visual trigger - pulse the geometry scale on beat
-        pulseGeometry();
-    }, "4n").start(0);
+        synth = new Tone.FMSynth({
+            harmonicity: 3,
+            modulationIndex: 10,
+            detune: 0,
+            oscillator: { type: "sine" },
+            envelope: { attack: 0.1, decay: 0.2, sustain: 0.1, release: 1.5 },
+            modulation: { type: "square" },
+            modulationEnvelope: { attack: 0.1, decay: 0.2, sustain: 1, release: 0.5 }
+        }).toDestination();
 
-    Tone.Transport.start();
-    
-    state.audioReady = true;
-    e.target.innerText = "Audio Active";
-    e.target.style.background = "#55ff55";
-});
+        const notes = ["C3", "D3", "E3", "G3", "A3"];
+        let index = 0;
+        
+        loop = new Tone.Loop(time => {
+            let note = notes[index % notes.length];
+            synth.triggerAttackRelease(note, "8n", time);
+            index++;
+            pulseGeometry();
+        }, "4n").start(0);
+
+        Tone.Transport.start();
+        
+        state.audioReady = true;
+        e.target.innerText = "Audio Active - Now Click Enter AR";
+        e.target.style.background = "#55ff55";
+    });
+}
 
 // --- Scene Setup ---
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+scene.add(camera); // Crucial: Add camera to scene so child objects render
 
-// alpha: true is mandatory for AR Passthrough
+// A secondary camera to capture the scene flatly for the feedback loop
+const monoCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -79,7 +82,6 @@ document.body.appendChild(renderer.domElement);
 document.body.appendChild(ARButton.createButton(renderer));
 
 // --- Ping-Pong Buffers ---
-// RGBA format is crucial to preserve the alpha channel for passthrough
 const rtParams = {
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
@@ -101,7 +103,7 @@ const feedbackMaterial = new THREE.ShaderMaterial({
         varying vec2 vUv;
         void main() {
             vUv = uv;
-            gl_Position = vec4(position, 1.0);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
     `,
     fragmentShader: `
@@ -113,101 +115,82 @@ const feedbackMaterial = new THREE.ShaderMaterial({
 
         void main() {
             vec2 center = vec2(0.5, 0.5);
-            
-            // 1. Zoom Transform
             vec2 uv = (vUv - center) * zoom;
             
-            // 2. Rotation Transform
             float s = sin(angle);
             float c = cos(angle);
             mat2 rot = mat2(c, -s, s, c);
             uv = rot * uv;
-            
-            // Restore origin
             uv += center;
 
-            // 3. Sample previous frame
             vec4 texColor = texture2D(tDiffuse, uv);
-            
-            // 4. Apply Decay to color AND alpha (prevents blowing out to solid white)
             gl_FragColor = texColor * decay;
         }
     `,
     transparent: true,
     depthWrite: false,
-    blending: THREE.AdditiveBlending
+    blending: THREE.NormalBlending
 });
 
-const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-const quadScene = new THREE.Scene();
-const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), feedbackMaterial);
-quadScene.add(quad);
+// FIX: Create a massive plane anchored 50 meters in front of the camera.
+// This allows WebXR to natively render the feedback buffer in 3D stereoscopic space.
+const feedbackPlaneGeo = new THREE.PlaneGeometry(200, 200);
+const feedbackPlane = new THREE.Mesh(feedbackPlaneGeo, feedbackMaterial);
+feedbackPlane.position.z = -50; 
+camera.add(feedbackPlane);
 
 // --- 3D Sacred Geometry (The Seed) ---
-const geom = new THREE.IcosahedronGeometry(0.2, 1);
+const geom = new THREE.IcosahedronGeometry(0.3, 0);
 const mat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, wireframe: true });
 const seedMesh = new THREE.Mesh(geom, mat);
-seedMesh.position.set(0, 1.2, -1);
+seedMesh.position.set(0, 0, -1.5); // Placed directly in front of the user
 scene.add(seedMesh);
 
 let pulseScale = 1.0;
 function pulseGeometry() {
-    pulseScale = 1.5; // Triggered by Tone.js loop
+    pulseScale = 1.8; 
 }
 
-// --- Render Loop (The Ping-Pong Logic) ---
+// --- Render Loop ---
 renderer.setAnimationLoop(() => {
     
-    // Animate Geometry
+    // 1. Sync the offscreen capture camera to the VR headset's physical location
+    monoCamera.position.copy(camera.position);
+    monoCamera.quaternion.copy(camera.quaternion);
+
+    // 2. Animate Seed Geometry
     seedMesh.rotation.x += 0.01;
     seedMesh.rotation.y += 0.02;
     pulseScale = THREE.MathUtils.lerp(pulseScale, 1.0, 0.1);
     seedMesh.scale.setScalar(pulseScale);
 
-    // STEP 1: Render the composite (Old Feedback + New Geometry) into Target B
+    const currentRT = renderer.getRenderTarget();
+
+    // STEP A: Render everything to the offscreen buffer (Target B)
     renderer.setRenderTarget(renderTargetB);
     renderer.clear();
-    
-    // Draw the warped previous frame
     feedbackMaterial.uniforms.tDiffuse.value = renderTargetA.texture;
-    renderer.render(quadScene, orthoCamera);
-    
-    // Draw the fresh 3D geometry on top
-    renderer.clearDepth();
+    // Three.js safely forces mono rendering when rendering to a WebGLRenderTarget
+    renderer.render(scene, monoCamera); 
+
+    // STEP B: Render to the physical VR Headset Displays
+    renderer.setRenderTarget(currentRT); 
+    renderer.clear();
+    feedbackMaterial.uniforms.tDiffuse.value = renderTargetB.texture;
+    // Renders the true 3D scene (including the stereoscopic seed mesh) over the passthrough
     renderer.render(scene, camera);
 
-    // STEP 2: Render Target B to the actual XR Headset Display
-    renderer.setRenderTarget(null);
-    renderer.clear();
-    
-    // We use a simple textured quad to dump Target B to the screen
-    feedbackMaterial.uniforms.tDiffuse.value = renderTargetB.texture;
-    // Temporarily bypass transformations just for the final screen output
-    const oldZoom = feedbackMaterial.uniforms.zoom.value;
-    const oldAngle = feedbackMaterial.uniforms.angle.value;
-    const oldDecay = feedbackMaterial.uniforms.decay.value;
-    
-    feedbackMaterial.uniforms.zoom.value = 1.0;
-    feedbackMaterial.uniforms.angle.value = 0.0;
-    feedbackMaterial.uniforms.decay.value = 1.0;
-    
-    renderer.render(quadScene, orthoCamera);
-    
-    // Restore transform variables for the next frame's loop
-    feedbackMaterial.uniforms.zoom.value = oldZoom;
-    feedbackMaterial.uniforms.angle.value = oldAngle;
-    feedbackMaterial.uniforms.decay.value = oldDecay;
-
-    // STEP 3: Swap Buffers (Target B becomes Target A for the next frame)
+    // STEP C: Swap buffers
     let temp = renderTargetA;
     renderTargetA = renderTargetB;
     renderTargetB = temp;
 });
 
-// Resize handler
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    monoCamera.aspect = window.innerWidth / window.innerHeight;
+    monoCamera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderTargetA.setSize(window.innerWidth, window.innerHeight);
     renderTargetB.setSize(window.innerWidth, window.innerHeight);
