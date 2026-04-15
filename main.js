@@ -4,13 +4,14 @@ import * as Tone from 'tone';
 
 // --- Global State ---
 const state = {
-    decay: 0.97,
+    decay: 0.95,
     zoom: 0.985,
-    rotation: 0.02,
+    rotation: 0.01,
     hueShift: 0.005
 };
 
-// --- WebGL & Compositor Setup ---
+// --- WebGL & Buffer Setup ---
+// 2048x2048 high-fidelity buffers to maintain sharpness deep into the recursion tunnel
 const RT_SIZE = 2048; 
 const rtParams = {
     minFilter: THREE.LinearFilter,
@@ -18,15 +19,15 @@ const rtParams = {
     format: THREE.RGBAFormat, 
     type: THREE.HalfFloatType
 };
-let rtFeedbackA = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE, rtParams);
-let rtFeedbackB = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE, rtParams);
-let rtSeed = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE, rtParams);
 
-// Shader: The Mathematical Phosphor Feedback Loop
+// Two buffers are all we need: One to capture the physical 3D room, one to hold the processed math
+let rtCapture = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE, rtParams);
+let rtFeedback = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE, rtParams);
+
+// --- The Feedback Math (Analog Degradation Simulator) ---
 const compositeMaterial = new THREE.ShaderMaterial({
     uniforms: {
-        tFeedback: { value: null },
-        tSeed: { value: null },
+        tDiffuse: { value: null },
         decay: { value: state.decay },
         zoom: { value: state.zoom },
         angle: { value: state.rotation },
@@ -40,8 +41,7 @@ const compositeMaterial = new THREE.ShaderMaterial({
         }
     `,
     fragmentShader: `
-        uniform sampler2D tFeedback;
-        uniform sampler2D tSeed;
+        uniform sampler2D tDiffuse;
         uniform float decay;
         uniform float zoom;
         uniform float angle;
@@ -73,17 +73,17 @@ const compositeMaterial = new THREE.ShaderMaterial({
             uv = rot * uv;
             uv += center;
 
-            vec4 fbColor = texture2D(tFeedback, uv);
-            vec4 sdColor = texture2D(tSeed, vUv);
+            vec4 texColor = texture2D(tDiffuse, uv);
 
-            if (hueShift > 0.001 && fbColor.a > 0.01) {
-                vec3 hsv = rgb2hsv(fbColor.rgb);
+            // Execute Hue Shift on the trailing pixels
+            if (hueShift > 0.001 && texColor.a > 0.01) {
+                vec3 hsv = rgb2hsv(texColor.rgb);
                 hsv.x = fract(hsv.x + hueShift);
-                fbColor.rgb = hsv2rgb(hsv);
+                texColor.rgb = hsv2rgb(hsv);
             }
             
-            fbColor *= decay;
-            gl_FragColor = max(fbColor, sdColor);
+            // Fade both color and alpha so the physical AR room stays visible
+            gl_FragColor = vec4(texColor.rgb * decay, texColor.a * decay);
         }
     `,
     transparent: true,
@@ -103,6 +103,7 @@ const compositeMaterial = new THREE.ShaderMaterial({
             if (param === 'Rot') state.rotation = val;
             if (param === 'Hue') state.hueShift = val;
             
+            // Scope fix: Access the correct material uniform
             compositeMaterial.uniforms.decay.value = state.decay;
             compositeMaterial.uniforms.zoom.value = state.zoom;
             compositeMaterial.uniforms.angle.value = state.rotation;
@@ -146,7 +147,7 @@ if (initBtn) {
             let note = notes[index % notes.length];
             synth.triggerAttackRelease(note, "8n", time);
             index++;
-            pulseScale = 1.5; // Audio transient scale bump
+            pulseScale = 1.6; // Audio transient scale bump
         }, "4n").start(0);
 
         Tone.Transport.start();
@@ -158,13 +159,17 @@ if (initBtn) {
 
 // --- Scene Architecture ---
 const sceneMain = new THREE.Scene();
-const xrCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
-sceneMain.add(xrCamera);
+const xrRig = new THREE.Group();
+sceneMain.add(xrRig);
 
-const sceneCapture = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+xrRig.add(camera); 
+
+// The Capture Camera mimics your physical eye to grab the 3D room
 const captureCamera = new THREE.PerspectiveCamera(90, 1.0, 0.01, 100);
-captureCamera.position.set(0, 1.2, 0); 
+sceneMain.add(captureCamera); 
 
+// Processing Quad
 const sceneComposite = new THREE.Scene();
 const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), compositeMaterial);
@@ -177,32 +182,30 @@ renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(ARButton.createButton(renderer));
 
-// --- Geometry Instantiation ---
-const projectionPlane = new THREE.Mesh(
-    new THREE.PlaneGeometry(40, 40),
-    new THREE.MeshBasicMaterial({ 
-        map: rtFeedbackB.texture, 
-        transparent: true,
-        blending: THREE.AdditiveBlending 
-    })
-);
-projectionPlane.position.set(0, 1.2, -20);
-sceneMain.add(projectionPlane);
+// --- Environment Sphere (The Projection Canvas) ---
+// An inverted sphere surrounding the player. It acts as the physical screen we project the tunnel onto.
+const envGeo = new THREE.SphereGeometry(30, 64, 64);
+const envMat = new THREE.MeshBasicMaterial({ 
+    map: rtFeedback.texture, 
+    side: THREE.BackSide,
+    transparent: true,
+    blending: THREE.NormalBlending 
+});
+const envSphere = new THREE.Mesh(envGeo, envMat);
+xrRig.add(envSphere);
 
+// --- The Seed Geometry ---
 const geom = new THREE.IcosahedronGeometry(0.3, 0);
 const mat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, wireframe: true });
 const seedMain = new THREE.Mesh(geom, mat);
-seedMain.position.set(0, 1.2, -1.5); 
-sceneMain.add(seedMain);
-
-const seedCapture = new THREE.Mesh(geom, mat);
-sceneCapture.add(seedCapture);
+seedMain.position.set(0, 1.5, -1.5); 
+xrRig.add(seedMain);
 
 // --- 6DOF Controller & Multi-Touch Logic ---
 const controller0 = renderer.xr.getController(0);
-sceneMain.add(controller0);
+xrRig.add(controller0);
 const controller1 = renderer.xr.getController(1);
-sceneMain.add(controller1);
+xrRig.add(controller1);
 
 let isGrabbing0 = false;
 let isGrabbing1 = false;
@@ -223,12 +226,8 @@ function handleControllers() {
 
     for (const source of session.inputSources) {
         if (!source.gamepad) continue;
-        if (source.handedness === 'left') {
-            leftAxes = source.gamepad.axes;
-        }
-        if (source.handedness === 'right') {
-            rightAxes = source.gamepad.axes;
-        }
+        if (source.handedness === 'left') { leftAxes = source.gamepad.axes; }
+        if (source.handedness === 'right') { rightAxes = source.gamepad.axes; }
     }
 
     // Two-Handed Scaling (Pinch & Pull)
@@ -251,7 +250,8 @@ function handleControllers() {
     // Single-Hand Grab Translation & Rotation
     if ((isGrabbing0 || isGrabbing1) && !(isGrabbing0 && isGrabbing1)) {
         const activeController = isGrabbing0 ? controller0 : controller1;
-        seedMain.position.setFromMatrixPosition(activeController.matrixWorld);
+        // Position relative to the XR Rig
+        seedMain.position.copy(activeController.position);
         seedMain.quaternion.copy(activeController.quaternion);
     }
 
@@ -279,55 +279,44 @@ function handleControllers() {
 
 // --- Render Loop Execution ---
 renderer.setAnimationLoop(() => {
-    
     handleControllers();
+
+    // Auto-rotate ONLY if not grabbing
+    if (!isGrabbing0 && !isGrabbing1 && Math.abs(state.zoom - 1.0) > 0.001) {
+       seedMain.rotation.x += 0.005;
+    }
 
     // Combine manual scale gesture with audio transient pulse
     pulseScale = THREE.MathUtils.lerp(pulseScale, 1.0, 0.1);
     seedMain.scale.copy(baseScale).multiplyScalar(pulseScale);
 
-    // Sync Capture Object to Physical Object
-    seedCapture.position.copy(seedMain.position);
-    seedCapture.quaternion.copy(seedMain.quaternion);
-    seedCapture.scale.copy(seedMain.scale);
+    // Sync Capture Camera to the VR Headset's physical location
+    captureCamera.position.setFromMatrixPosition(camera.matrixWorld);
+    captureCamera.quaternion.setFromRotationMatrix(camera.matrixWorld);
 
-    const isXRActive = renderer.xr.enabled;
+    // CRITICAL FIX: Safe Off-Screen Rendering
+    // By passing rtCapture to setRenderTarget, Three.js automatically suspends the stereo XR compositor for this draw call
+    const currentRT = renderer.getRenderTarget();
 
-    // --- ISOLATED COMPOSITING PASS ---
-    renderer.xr.enabled = false; 
-
-    // Step A: Capture the isolated seed object
-    renderer.setRenderTarget(rtSeed);
+    // 1. Capture the entire 3D room (Seed + The EnvSphere projecting the previous frame)
+    renderer.setRenderTarget(rtCapture);
     renderer.clear();
-    renderer.render(sceneCapture, captureCamera);
+    renderer.render(sceneMain, captureCamera);
 
-    // Step B: Calculate the Phosphor Decay composite (Feedback A + Seed -> Target B)
-    compositeMaterial.uniforms.tFeedback.value = rtFeedbackA.texture;
-    compositeMaterial.uniforms.tSeed.value = rtSeed.texture;
-    
-    renderer.setRenderTarget(rtFeedbackB);
+    // 2. Mathematically warp the captured room (Apply Decay/Zoom/Hue)
+    compositeMaterial.uniforms.tDiffuse.value = rtCapture.texture;
+    renderer.setRenderTarget(rtFeedback);
     renderer.clear();
     renderer.render(sceneComposite, orthoCamera);
 
-    // --- MAIN PRESENTATION PASS ---
-    renderer.xr.enabled = isXRActive; 
-    
-    // Update the physical wall map
-    projectionPlane.material.map = rtFeedbackB.texture;
-
-    // Render stereoscopic environment
-    renderer.setRenderTarget(null);
+    // 3. Render the stereoscopic view to your VR Headset
+    renderer.setRenderTarget(currentRT); 
     renderer.clear();
-    renderer.render(sceneMain, xrCamera);
-
-    // Swap Ping-Pong Buffers
-    let temp = rtFeedbackA;
-    rtFeedbackA = rtFeedbackB;
-    rtFeedbackB = temp;
+    renderer.render(sceneMain, camera);
 });
 
 window.addEventListener('resize', () => {
-    xrCamera.aspect = window.innerWidth / window.innerHeight;
-    xrCamera.updateProjectionMatrix();
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
